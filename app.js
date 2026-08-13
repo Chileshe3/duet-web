@@ -1,27 +1,18 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { auth, db } from "./firebase.js";
 import {
-  getAuth, onAuthStateChanged, signOut,
+  onAuthStateChanged, signOut,
   signInWithEmailAndPassword, createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
 import {
-  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch,
-  onSnapshot, collection, query, where, runTransaction, serverTimestamp
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  ensureUserDocument, watchProfile, listenForIncomingPairing,
+  submitPartnerEmail, completeProfile, unpairPartner
+} from "./pairing.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyA7AyU-rb01OLe38Ee885KDTD3hAG53-po",
-  authDomain: "duet-8b557.firebaseapp.com",
-  databaseURL: "https://duet-8b557-default-rtdb.firebaseio.com",
-  projectId: "duet-8b557",
-  storageBucket: "duet-8b557.firebasestorage.app",
-  messagingSenderId: "391763841086",
-  appId: "1:391763841086:web:b8c7d540f50da9c5c4c16f",
-  measurementId: "G-0M5VXDDDEJ"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+import {
+  observeMessages, sendMessage, observeTyping, setTyping, scheduleTypingClear
+} from "./chat.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const root = document.getElementById("app");
@@ -31,171 +22,37 @@ let unsubProfile = null;
 let unsubIntent = null;
 let startedIncomingListener = false;
 
+let unsubMessages = null;
+let unsubTyping = null;
+
 let uiStep = "choice"; // username | choice | enterEmail | waiting
 let emailInput = "";
 let usernameInput = "";
 let submitError = "";
 let isSubmitting = false;
 
-// ---------------- Firestore logic (mirrors CoupleRepository.kt) ----------------
+// ---------------- Wiring pairing/profile listeners ----------------
 
-async function ensureUserDocument(uid, email) {
-  const ref = doc(db, "users", uid);
-  const snap = await getDoc(ref);
-  if (snap.exists()) {
-    const data = snap.data();
-    if (!data.email && email) await updateDoc(ref, { email });
-    return;
-  }
-  await setDoc(ref, {
-    uid, email,
-    username: "",
-    partnerUid: null,
-    coupleId: null,
-    pairingSkipped: false,
-    profileComplete: false
-  });
-}
-
-function watchProfile(uid) {
+function watchProfileAndRender(uid) {
   if (unsubProfile) unsubProfile();
-  unsubProfile = onSnapshot(doc(db, "users", uid), (snap) => {
-    currentProfile = snap.exists() ? snap.data() : null;
+  unsubProfile = watchProfile(uid, (profile) => {
+    currentProfile = profile;
     if (currentProfile?.email && !startedIncomingListener) {
       startedIncomingListener = true;
-      listenForIncomingPairing(uid, currentProfile.email);
+      unsubIntent = listenForIncomingPairing(
+        uid,
+        currentProfile.email,
+        () => currentProfile,
+        (e) => console.error("pairing failed", e)
+      );
     }
     render();
   });
 }
 
-function listenForIncomingPairing(myUid, myEmail) {
-  const normalized = myEmail.trim().toLowerCase();
-  const q = query(collection(db, "pairIntents"), where("targetEmail", "==", normalized));
-  unsubIntent = onSnapshot(q, async (snap) => {
-    const docSnap = snap.docs.find(d => d.exists());
-    if (!docSnap) return;
-    if (currentProfile?.coupleId) return;
-    const intent = {
-      fromUid: docSnap.data().fromUid,
-      fromEmail: docSnap.id,
-      targetEmail: docSnap.data().targetEmail
-    };
-    if (!intent.fromUid) return;
-    await completeIncomingPairing(myUid, normalized, intent);
-  });
-}
-
-async function completeIncomingPairing(myUid, myEmail, intent) {
-  const intentRef = doc(db, "pairIntents", intent.fromEmail);
-  const myIntentRef = doc(db, "pairIntents", myEmail);
-  try {
-    await runTransaction(db, async (txn) => {
-      const mySnap = await txn.get(doc(db, "users", myUid));
-      if (mySnap.data()?.coupleId) return;
-
-      const intentSnap = await txn.get(intentRef);
-      if (!intentSnap.exists() || intentSnap.data().targetEmail !== myEmail) return;
-      const partnerUid = intentSnap.data().fromUid;
-      if (!partnerUid) return;
-
-      const coupleId = "CP-" + Math.floor(100000 + Math.random() * 900000);
-      txn.update(doc(db, "users", myUid), { partnerUid, coupleId });
-      txn.update(doc(db, "users", partnerUid), { partnerUid: myUid, coupleId });
-      txn.set(doc(db, "couples", coupleId), {
-        members: [myUid, partnerUid],
-        pairedAt: serverTimestamp(),
-        active: true
-      });
-      txn.delete(intentRef);
-      txn.delete(myIntentRef);
-    });
-  } catch (e) {
-    console.error("completeIncomingPairing failed", e);
-  }
-}
-
-async function submitPartnerEmail(myUid, myEmail, partnerEmailRaw) {
-  const myNormalized = myEmail.trim().toLowerCase();
-  const partnerNormalized = partnerEmailRaw.trim().toLowerCase();
-
-  if (!EMAIL_REGEX.test(partnerNormalized)) throw new Error("Enter a valid email address");
-  if (partnerNormalized === myNormalized) throw new Error("You can't pair with yourself");
-
-  const myIntentRef = doc(db, "pairIntents", myNormalized);
-  const reverseIntentRef = doc(db, "pairIntents", partnerNormalized);
-
-  return await runTransaction(db, async (txn) => {
-    const mySnap = await txn.get(doc(db, "users", myUid));
-    if (mySnap.data()?.coupleId) throw new Error("You're already paired");
-
-    const reverseSnap = await txn.get(reverseIntentRef);
-    const reverseTarget = reverseSnap.exists() ? reverseSnap.data().targetEmail : null;
-    const reverseFromUid = reverseSnap.exists() ? reverseSnap.data().fromUid : null;
-
-    if (reverseSnap.exists() && reverseTarget === myNormalized && reverseFromUid) {
-      const coupleId = "CP-" + Math.floor(100000 + Math.random() * 900000);
-      txn.update(doc(db, "users", myUid), { partnerUid: reverseFromUid, coupleId });
-      txn.update(doc(db, "users", reverseFromUid), { partnerUid: myUid, coupleId });
-      txn.set(doc(db, "couples", coupleId), {
-        members: [myUid, reverseFromUid],
-        pairedAt: serverTimestamp(),
-        active: true
-      });
-      txn.delete(reverseIntentRef);
-      txn.delete(myIntentRef);
-      return { type: "paired", coupleId };
-    } else {
-      txn.set(myIntentRef, {
-        fromUid: myUid,
-        fromEmail: myNormalized,
-        targetEmail: partnerNormalized,
-        createdAt: serverTimestamp()
-      });
-      return { type: "waiting" };
-    }
-  });
-}
-
-async function completeProfile(uid, usernameRaw) {
-  const trimmed = usernameRaw.trim();
-  if (trimmed.length < 3) throw new Error("Username must be at least 3 characters");
-  const normalized = trimmed.toLowerCase();
-
-  const usernameRef = doc(db, "usernames", normalized);
-  const existingOwner = await getDoc(usernameRef);
-  if (existingOwner.exists() && existingOwner.data().uid !== uid) {
-    throw new Error("That username is taken");
-  }
-
-  const batch = writeBatch(db);
-  batch.set(usernameRef, { uid });
-  batch.set(doc(db, "users", uid), { username: trimmed, profileComplete: true }, { merge: true });
-  await batch.commit();
-}
-
-async function unpairPartner(uid) {
-  const profileSnap = await getDoc(doc(db, "users", uid));
-  const profile = profileSnap.data();
-  const partnerUid = profile?.partnerUid;
-  const coupleId = profile?.coupleId;
-
-  await runTransaction(db, async (txn) => {
-    txn.update(doc(db, "users", uid), { partnerUid: null, coupleId: null });
-    if (partnerUid) txn.update(doc(db, "users", partnerUid), { partnerUid: null, coupleId: null });
-    if (coupleId) txn.update(doc(db, "couples", coupleId), { active: false });
-  });
-
-  try {
-    await deleteDoc(doc(db, "pairIntents", (profile?.email || "").trim().toLowerCase()));
-  } catch {}
-  if (partnerUid) {
-    const partnerSnap = await getDoc(doc(db, "users", partnerUid));
-    const partnerEmail = partnerSnap.data()?.email;
-    if (partnerEmail) {
-      try { await deleteDoc(doc(db, "pairIntents", partnerEmail.trim().toLowerCase())); } catch {}
-    }
-  }
+function teardownChatListeners() {
+  if (unsubMessages) { unsubMessages(); unsubMessages = null; }
+  if (unsubTyping) { unsubTyping(); unsubTyping = null; }
 }
 
 // ---------------- Auth wiring ----------------
@@ -203,10 +60,11 @@ async function unpairPartner(uid) {
 onAuthStateChanged(auth, (user) => {
   if (user) {
     uiStep = "choice";
-    ensureUserDocument(user.uid, user.email || "").then(() => watchProfile(user.uid));
+    ensureUserDocument(user.uid, user.email || "").then(() => watchProfileAndRender(user.uid));
   } else {
     if (unsubProfile) unsubProfile();
     if (unsubIntent) unsubIntent();
+    teardownChatListeners();
     startedIncomingListener = false;
     currentProfile = null;
     renderAuth();
@@ -253,6 +111,7 @@ function render() {
   const user = auth.currentUser;
 
   if (!currentProfile.profileComplete) {
+    teardownChatListeners();
     root.innerHTML = `
       <div class="card">
         <h1>Choose a username</h1>
@@ -284,22 +143,11 @@ function render() {
   }
 
   if (currentProfile.coupleId) {
-    root.innerHTML = `
-      <div class="card">
-        <h1>💕 Paired</h1>
-        <p>Signed in as ${user.email}</p>
-        <p>Couple ID: <b>${currentProfile.coupleId}</b></p>
-        <p>Partner UID: ${currentProfile.partnerUid || "—"}</p>
-        <div class="row">
-          <button id="unpair">Unpair</button>
-          <button id="signout">Sign Out</button>
-        </div>
-      </div>
-    `;
-    document.getElementById("unpair").onclick = () => unpairPartner(user.uid);
-    document.getElementById("signout").onclick = () => signOut(auth);
+    renderChat(user);
     return;
   }
+
+  teardownChatListeners();
 
   if (uiStep === "waiting") {
     root.innerHTML = `
@@ -366,4 +214,75 @@ function render() {
   document.getElementById("inRelationship").onclick = () => { uiStep = "enterEmail"; render(); };
   document.getElementById("later").onclick = () => updateDoc(doc(db, "users", user.uid), { pairingSkipped: true });
   document.getElementById("signout").onclick = () => signOut(auth);
+}
+
+// ---------------- Chat view ----------------
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderChat(user) {
+  root.innerHTML = `
+    <div class="chat-card">
+      <div class="chat-header">
+        <div>
+          <div class="chat-title">Couple ${currentProfile.coupleId}</div>
+          <div class="chat-status"><span class="dot"></span><span id="typingStatus">online</span></div>
+        </div>
+        <button id="unpair" class="icon-btn" style="margin-left:auto;width:auto;">Unpair</button>
+        <button id="signout" class="icon-btn" style="width:auto;">Sign Out</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div class="chat-input-row">
+        <input id="msgInput" type="text" placeholder="Type a message…" autocomplete="off" />
+        <button id="sendBtn">Send</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("unpair").onclick = async () => {
+    teardownChatListeners();
+    await unpairPartner(user.uid);
+  };
+  document.getElementById("signout").onclick = () => signOut(auth);
+
+  // Re-subscribe to messages/typing for this couple. Guarded so re-renders
+  // triggered by profile snapshot changes don't stack up listeners.
+  if (unsubMessages) unsubMessages();
+  unsubMessages = observeMessages(currentProfile.coupleId, (msgs) => {
+    const el = document.getElementById("messages");
+    if (!el) return;
+    el.innerHTML = msgs.map(m => `
+      <div class="bubble ${m.senderUid === user.uid ? "mine" : "theirs"}">${escapeHtml(m.text)}</div>
+    `).join("");
+    el.scrollTop = el.scrollHeight;
+  });
+
+  if (unsubTyping) unsubTyping();
+  if (currentProfile.partnerUid) {
+    unsubTyping = observeTyping(currentProfile.coupleId, currentProfile.partnerUid, (isTyping) => {
+      const el = document.getElementById("typingStatus");
+      if (el) el.textContent = isTyping ? "typing…" : "online";
+    });
+  }
+
+  const input = document.getElementById("msgInput");
+  const send = async () => {
+    const text = input.value;
+    if (!text.trim()) return;
+    input.value = "";
+    await sendMessage(currentProfile.coupleId, user.uid, text);
+    await setTyping(currentProfile.coupleId, user.uid, false);
+  };
+  document.getElementById("sendBtn").onclick = send;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+  });
+  input.addEventListener("input", () => {
+    setTyping(currentProfile.coupleId, user.uid, true);
+    scheduleTypingClear(currentProfile.coupleId, user.uid);
+  });
 }
