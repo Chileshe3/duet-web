@@ -4,7 +4,7 @@ import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc,
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch,
   onSnapshot, collection, query, where, runTransaction, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -31,8 +31,9 @@ let unsubProfile = null;
 let unsubIntent = null;
 let startedIncomingListener = false;
 
-let uiStep = "choice"; // choice | enterEmail | waiting
+let uiStep = "choice"; // username | choice | enterEmail | waiting
 let emailInput = "";
+let usernameInput = "";
 let submitError = "";
 let isSubmitting = false;
 
@@ -156,6 +157,23 @@ async function submitPartnerEmail(myUid, myEmail, partnerEmailRaw) {
   });
 }
 
+async function completeProfile(uid, usernameRaw) {
+  const trimmed = usernameRaw.trim();
+  if (trimmed.length < 3) throw new Error("Username must be at least 3 characters");
+  const normalized = trimmed.toLowerCase();
+
+  const usernameRef = doc(db, "usernames", normalized);
+  const existingOwner = await getDoc(usernameRef);
+  if (existingOwner.exists() && existingOwner.data().uid !== uid) {
+    throw new Error("That username is taken");
+  }
+
+  const batch = writeBatch(db);
+  batch.set(usernameRef, { uid });
+  batch.set(doc(db, "users", uid), { username: trimmed, profileComplete: true }, { merge: true });
+  await batch.commit();
+}
+
 async function unpairPartner(uid) {
   const profileSnap = await getDoc(doc(db, "users", uid));
   const profile = profileSnap.data();
@@ -233,6 +251,37 @@ function render() {
     return;
   }
   const user = auth.currentUser;
+
+  if (!currentProfile.profileComplete) {
+    root.innerHTML = `
+      <div class="card">
+        <h1>Choose a username</h1>
+        <p>Signed in as ${user.email}</p>
+        <input id="usernameField" type="text" placeholder="Username (min 3 chars)" value="${usernameInput}" />
+        <p class="error">${submitError}</p>
+        <div class="row">
+          <button id="saveUsername" ${isSubmitting ? "disabled" : ""}>${isSubmitting ? "Saving…" : "Save"}</button>
+          <button id="signout">Sign Out</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("saveUsername").onclick = async () => {
+      usernameInput = document.getElementById("usernameField").value;
+      isSubmitting = true; submitError = "";
+      render();
+      try {
+        await completeProfile(user.uid, usernameInput);
+        isSubmitting = false;
+        // watchProfile's onSnapshot will pick up profileComplete and re-render.
+      } catch (e) {
+        isSubmitting = false;
+        submitError = e.message;
+        render();
+      }
+    };
+    document.getElementById("signout").onclick = () => signOut(auth);
+    return;
+  }
 
   if (currentProfile.coupleId) {
     root.innerHTML = `
