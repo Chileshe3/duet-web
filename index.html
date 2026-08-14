@@ -92,6 +92,49 @@
     font-size: 12px;
     color: #888;
   }
+  .bubble-download {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 13px;
+    text-decoration: none;
+    color: inherit;
+    opacity: 0.85;
+  }
+  .lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .lightbox-image {
+    max-width: 92vw;
+    max-height: 92vh;
+    object-fit: contain;
+  }
+  .lightbox-actions {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    gap: 10px;
+  }
+  .lightbox-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: none;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    cursor: pointer;
+  }
   #attachBtn {
     flex: none;
     width: 36px;

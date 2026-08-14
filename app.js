@@ -11,7 +11,8 @@ import {
 } from "./pairing.js";
 
 import {
-  observeMessages, sendMessage, sendMediaMessage, observeTyping, setTyping, scheduleTypingClear
+  observeMessages, sendMessage, sendMediaMessage, observeTyping, setTyping, scheduleTypingClear,
+  observePresence, setPresence
 } from "./chat.js";
 
 import { uploadChatMedia, mediaTypeFromMime } from "./supabase.js";
@@ -26,13 +27,15 @@ let startedIncomingListener = false;
 
 let unsubMessages = null;
 let unsubTyping = null;
+let unsubPresence = null;
 
-let uiStep = "choice"; // username | choice | enterEmail | waiting
+let uiStep = "choice";
 let emailInput = "";
 let usernameInput = "";
 let submitError = "";
 let isSubmitting = false;
 let isUploadingMedia = false;
+let partnerLastActiveMillis = null;
 
 // ---------------- Wiring pairing/profile listeners ----------------
 
@@ -56,7 +59,31 @@ function watchProfileAndRender(uid) {
 function teardownChatListeners() {
   if (unsubMessages) { unsubMessages(); unsubMessages = null; }
   if (unsubTyping) { unsubTyping(); unsubTyping = null; }
+  if (unsubPresence) { unsubPresence(); unsubPresence = null; }
 }
+
+// ---------------- Presence: mark this account online/offline ----------------
+// Runs for the whole session, independent of which UI step is showing, so
+// "online" on this web client actually reflects reality instead of being hardcoded.
+
+function startOwnPresenceTracking(uid) {
+  setPresence(uid, true);
+  const heartbeat = setInterval(() => setPresence(uid, true), 20_000);
+
+  const markOffline = () => setPresence(uid, false);
+  window.addEventListener("beforeunload", markOffline);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") markOffline();
+    else setPresence(uid, true);
+  });
+
+  return () => {
+    clearInterval(heartbeat);
+    window.removeEventListener("beforeunload", markOffline);
+  };
+}
+
+let stopOwnPresence = null;
 
 // ---------------- Auth wiring ----------------
 
@@ -64,10 +91,13 @@ onAuthStateChanged(auth, (user) => {
   if (user) {
     uiStep = "choice";
     ensureUserDocument(user.uid, user.email || "").then(() => watchProfileAndRender(user.uid));
+    if (stopOwnPresence) stopOwnPresence();
+    stopOwnPresence = startOwnPresenceTracking(user.uid);
   } else {
     if (unsubProfile) unsubProfile();
     if (unsubIntent) unsubIntent();
     teardownChatListeners();
+    if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
     startedIncomingListener = false;
     currentProfile = null;
     renderAuth();
@@ -86,7 +116,7 @@ async function doAuth(fn) {
   }
 }
 
-// ---------------- Rendering ----------------
+// ---------------- Rendering (auth/profile/pairing screens unchanged) ----------------
 
 function renderAuth() {
   root.innerHTML = `
@@ -226,16 +256,53 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function formatLastSeen(millis) {
+  if (!millis) return "offline";
+  const diffMs = Date.now() - millis;
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return "last seen just now";
+  if (min < 60) return `last seen ${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `last seen ${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `last seen ${days}d ago`;
+  return "last seen a while ago";
+}
+
 function bubbleContentHtml(m) {
   if (m.type === "IMAGE" && m.mediaUrl) {
     const caption = m.text ? `<div class="bubble-caption">${escapeHtml(m.text)}</div>` : "";
-    return `<img class="bubble-media" src="${m.mediaUrl}" alt="Photo" />${caption}`;
+    return `
+      <img class="bubble-media" src="${m.mediaUrl}" alt="Photo" data-viewer-url="${m.mediaUrl}" data-viewer-name="${escapeHtml(m.mediaFileName || 'photo.jpg')}" />
+      ${caption}
+    `;
   }
   if (m.type === "VIDEO" && m.mediaUrl) {
     const caption = m.text ? `<div class="bubble-caption">${escapeHtml(m.text)}</div>` : "";
-    return `<video class="bubble-media" src="${m.mediaUrl}" controls></video>${caption}`;
+    return `
+      <video class="bubble-media" src="${m.mediaUrl}" controls></video>
+      <a class="bubble-download" href="${m.mediaUrl}" download="${escapeHtml(m.mediaFileName || 'video.mp4')}" title="Save video">⬇</a>
+      ${caption}
+    `;
   }
   return escapeHtml(m.text);
+}
+
+function openLightbox(url, fileName) {
+  const overlay = document.createElement("div");
+  overlay.className = "lightbox-overlay";
+  overlay.innerHTML = `
+    <div class="lightbox-actions">
+      <a class="lightbox-btn" href="${url}" download="${escapeHtml(fileName)}" title="Save to device">⬇</a>
+      <button class="lightbox-btn" id="lightboxClose" title="Close">✕</button>
+    </div>
+    <img class="lightbox-image" src="${url}" alt="Photo" />
+  `;
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) document.body.removeChild(overlay);
+  });
+  overlay.querySelector("#lightboxClose").onclick = () => document.body.removeChild(overlay);
+  document.body.appendChild(overlay);
 }
 
 function renderChat(user) {
@@ -244,7 +311,7 @@ function renderChat(user) {
       <div class="chat-header">
         <div>
           <div class="chat-title">Couple ${currentProfile.coupleId}</div>
-          <div class="chat-status"><span class="dot"></span><span id="typingStatus">online</span></div>
+          <div class="chat-status"><span class="dot" id="statusDot" style="display:none;"></span><span id="typingStatus">offline</span></div>
         </div>
         <button id="unpair" class="icon-btn" style="margin-left:auto;width:auto;">Unpair</button>
         <button id="signout" class="icon-btn" style="width:auto;">Sign Out</button>
@@ -252,8 +319,8 @@ function renderChat(user) {
       <div id="messages" class="messages"></div>
       <div id="uploadStatus" class="upload-status" style="display:none;">Uploading…</div>
       <div class="chat-input-row">
-        <button id="attachBtn" class="icon-btn" title="Attach photo or video">📎</button>
-        <input id="fileInput" type="file" accept="image/*,video/*" style="display:none;" />
+        <button id="attachBtn" class="icon-btn" title="Attach photos or videos">📎</button>
+        <input id="fileInput" type="file" accept="image/*,video/*" multiple style="display:none;" />
         <input id="msgInput" type="text" placeholder="Type a message…" autocomplete="off" />
         <button id="sendBtn">Send</button>
       </div>
@@ -274,15 +341,42 @@ function renderChat(user) {
       <div class="bubble ${m.senderUid === user.uid ? "mine" : "theirs"}">${bubbleContentHtml(m)}</div>
     `).join("");
     el.scrollTop = el.scrollHeight;
+
+    // Wire up image tap-to-view after render.
+    el.querySelectorAll("img.bubble-media").forEach((img) => {
+      img.style.cursor = "pointer";
+      img.addEventListener("click", () => openLightbox(img.dataset.viewerUrl, img.dataset.viewerName));
+    });
   });
 
   if (unsubTyping) unsubTyping();
+  if (unsubPresence) unsubPresence();
+
+  const statusEl = document.getElementById("typingStatus");
+  const dotEl = document.getElementById("statusDot");
+  let partnerIsTyping = false;
+  let partnerIsOnline = false;
+
+  function refreshStatusText() {
+    if (!statusEl) return;
+    statusEl.textContent = partnerIsTyping ? "typing…" : (partnerIsOnline ? "online" : formatLastSeen(partnerLastActiveMillis));
+    if (dotEl) dotEl.style.display = partnerIsOnline ? "inline-block" : "none";
+  }
+
   if (currentProfile.partnerUid) {
     unsubTyping = observeTyping(currentProfile.coupleId, currentProfile.partnerUid, (isTyping) => {
-      const el = document.getElementById("typingStatus");
-      if (el) el.textContent = isTyping ? "typing…" : "online";
+      partnerIsTyping = isTyping;
+      refreshStatusText();
+    });
+    unsubPresence = observePresence(currentProfile.partnerUid, (isOnline) => {
+      partnerIsOnline = isOnline;
+      // observePresence in chat.js only reports the boolean; if you want an exact
+      // "last seen" timestamp on this client too, extend observePresence to also
+      // pass back lastActiveAt the same way ChatRepository.kt does on Android.
+      refreshStatusText();
     });
   }
+  refreshStatusText();
 
   const input = document.getElementById("msgInput");
   const send = async () => {
@@ -301,38 +395,43 @@ function renderChat(user) {
     scheduleTypingClear(currentProfile.coupleId, user.uid);
   });
 
-  // ---- Attach / upload ----
+  // ---- Attach / upload (multi-file) ----
   const fileInput = document.getElementById("fileInput");
   document.getElementById("attachBtn").onclick = () => {
     if (!isUploadingMedia) fileInput.click();
   };
   fileInput.addEventListener("change", async () => {
-    const file = fileInput.files[0];
-    fileInput.value = ""; // reset so picking the same file twice still fires "change"
-    if (!file) return;
+    const files = Array.from(fileInput.files);
+    fileInput.value = "";
+    if (files.length === 0) return;
 
-    const statusEl = document.getElementById("uploadStatus");
+    const statusEl2 = document.getElementById("uploadStatus");
     isUploadingMedia = true;
-    statusEl.style.display = "block";
-    statusEl.textContent = "Uploading…";
+    statusEl2.style.display = "block";
 
-    try {
-      const uploaded = await uploadChatMedia(currentProfile.coupleId, file);
-      const type = mediaTypeFromMime(file.type);
-      await sendMediaMessage(currentProfile.coupleId, user.uid, {
-        type,
-        url: uploaded.url,
-        fileName: uploaded.fileName,
-        sizeBytes: uploaded.sizeBytes
-      });
-    } catch (e) {
-      statusEl.textContent = e.message || "Upload failed — try again.";
-      setTimeout(() => { statusEl.style.display = "none"; }, 3000);
-      isUploadingMedia = false;
-      return;
+    let failed = 0;
+    for (let i = 0; i < files.length; i++) {
+      statusEl2.textContent = `Uploading ${i + 1} of ${files.length}…`;
+      try {
+        const uploaded = await uploadChatMedia(currentProfile.coupleId, files[i]);
+        const type = mediaTypeFromMime(files[i].type);
+        await sendMediaMessage(currentProfile.coupleId, user.uid, {
+          type,
+          url: uploaded.url,
+          fileName: uploaded.fileName,
+          sizeBytes: uploaded.sizeBytes
+        });
+      } catch (e) {
+        failed++;
+      }
     }
 
     isUploadingMedia = false;
-    statusEl.style.display = "none";
+    if (failed > 0) {
+      statusEl2.textContent = `${failed} file(s) failed to send`;
+      setTimeout(() => { statusEl2.style.display = "none"; }, 3000);
+    } else {
+      statusEl2.style.display = "none";
+    }
   });
 }
