@@ -21,7 +21,11 @@ export function observeMessages(coupleId, onChange) {
         id: d.id,
         text: data.text,
         senderUid: data.senderUid,
-        timestampMillis: data.timestamp?.toMillis?.() ?? null
+        timestampMillis: data.timestamp?.toMillis?.() ?? null,
+        type: data.type ?? "TEXT",
+        mediaUrl: data.mediaUrl ?? null,
+        mediaFileName: data.mediaFileName ?? null,
+        mediaSizeBytes: data.mediaSizeBytes ?? null
       };
     }));
   });
@@ -33,7 +37,20 @@ export async function sendMessage(coupleId, senderUid, text) {
   await addDoc(collection(db, "couples", coupleId, "messages"), {
     text: trimmed,
     senderUid,
-    timestamp: serverTimestamp()
+    timestamp: serverTimestamp(),
+    type: "TEXT"
+  });
+}
+
+export async function sendMediaMessage(coupleId, senderUid, { type, url, fileName, sizeBytes }, caption = "") {
+  await addDoc(collection(db, "couples", coupleId, "messages"), {
+    text: caption.trim(),
+    senderUid,
+    timestamp: serverTimestamp(),
+    type,
+    mediaUrl: url,
+    mediaFileName: fileName,
+    mediaSizeBytes: sizeBytes
   });
 }
 

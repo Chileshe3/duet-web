@@ -11,8 +11,10 @@ import {
 } from "./pairing.js";
 
 import {
-  observeMessages, sendMessage, observeTyping, setTyping, scheduleTypingClear
+  observeMessages, sendMessage, sendMediaMessage, observeTyping, setTyping, scheduleTypingClear
 } from "./chat.js";
+
+import { uploadChatMedia, mediaTypeFromMime } from "./supabase.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const root = document.getElementById("app");
@@ -30,6 +32,7 @@ let emailInput = "";
 let usernameInput = "";
 let submitError = "";
 let isSubmitting = false;
+let isUploadingMedia = false;
 
 // ---------------- Wiring pairing/profile listeners ----------------
 
@@ -131,7 +134,6 @@ function render() {
       try {
         await completeProfile(user.uid, usernameInput);
         isSubmitting = false;
-        // watchProfile's onSnapshot will pick up profileComplete and re-render.
       } catch (e) {
         isSubmitting = false;
         submitError = e.message;
@@ -224,6 +226,18 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function bubbleContentHtml(m) {
+  if (m.type === "IMAGE" && m.mediaUrl) {
+    const caption = m.text ? `<div class="bubble-caption">${escapeHtml(m.text)}</div>` : "";
+    return `<img class="bubble-media" src="${m.mediaUrl}" alt="Photo" />${caption}`;
+  }
+  if (m.type === "VIDEO" && m.mediaUrl) {
+    const caption = m.text ? `<div class="bubble-caption">${escapeHtml(m.text)}</div>` : "";
+    return `<video class="bubble-media" src="${m.mediaUrl}" controls></video>${caption}`;
+  }
+  return escapeHtml(m.text);
+}
+
 function renderChat(user) {
   root.innerHTML = `
     <div class="chat-card">
@@ -236,7 +250,10 @@ function renderChat(user) {
         <button id="signout" class="icon-btn" style="width:auto;">Sign Out</button>
       </div>
       <div id="messages" class="messages"></div>
+      <div id="uploadStatus" class="upload-status" style="display:none;">Uploading…</div>
       <div class="chat-input-row">
+        <button id="attachBtn" class="icon-btn" title="Attach photo or video">📎</button>
+        <input id="fileInput" type="file" accept="image/*,video/*" style="display:none;" />
         <input id="msgInput" type="text" placeholder="Type a message…" autocomplete="off" />
         <button id="sendBtn">Send</button>
       </div>
@@ -249,14 +266,12 @@ function renderChat(user) {
   };
   document.getElementById("signout").onclick = () => signOut(auth);
 
-  // Re-subscribe to messages/typing for this couple. Guarded so re-renders
-  // triggered by profile snapshot changes don't stack up listeners.
   if (unsubMessages) unsubMessages();
   unsubMessages = observeMessages(currentProfile.coupleId, (msgs) => {
     const el = document.getElementById("messages");
     if (!el) return;
     el.innerHTML = msgs.map(m => `
-      <div class="bubble ${m.senderUid === user.uid ? "mine" : "theirs"}">${escapeHtml(m.text)}</div>
+      <div class="bubble ${m.senderUid === user.uid ? "mine" : "theirs"}">${bubbleContentHtml(m)}</div>
     `).join("");
     el.scrollTop = el.scrollHeight;
   });
@@ -284,5 +299,40 @@ function renderChat(user) {
   input.addEventListener("input", () => {
     setTyping(currentProfile.coupleId, user.uid, true);
     scheduleTypingClear(currentProfile.coupleId, user.uid);
+  });
+
+  // ---- Attach / upload ----
+  const fileInput = document.getElementById("fileInput");
+  document.getElementById("attachBtn").onclick = () => {
+    if (!isUploadingMedia) fileInput.click();
+  };
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    fileInput.value = ""; // reset so picking the same file twice still fires "change"
+    if (!file) return;
+
+    const statusEl = document.getElementById("uploadStatus");
+    isUploadingMedia = true;
+    statusEl.style.display = "block";
+    statusEl.textContent = "Uploading…";
+
+    try {
+      const uploaded = await uploadChatMedia(currentProfile.coupleId, file);
+      const type = mediaTypeFromMime(file.type);
+      await sendMediaMessage(currentProfile.coupleId, user.uid, {
+        type,
+        url: uploaded.url,
+        fileName: uploaded.fileName,
+        sizeBytes: uploaded.sizeBytes
+      });
+    } catch (e) {
+      statusEl.textContent = e.message || "Upload failed — try again.";
+      setTimeout(() => { statusEl.style.display = "none"; }, 3000);
+      isUploadingMedia = false;
+      return;
+    }
+
+    isUploadingMedia = false;
+    statusEl.style.display = "none";
   });
 }
