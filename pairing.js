@@ -4,8 +4,6 @@ import {
   onSnapshot, collection, query, where, runTransaction, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 export async function ensureUserDocument(uid, email) {
   const ref = doc(db, "users", uid);
   const snap = await getDoc(ref);
@@ -30,94 +28,6 @@ export function watchProfile(uid, onChange) {
   });
 }
 
-export function listenForIncomingPairing(myUid, myEmail, getCurrentProfile, onError) {
-  const normalized = myEmail.trim().toLowerCase();
-  const q = query(collection(db, "pairIntents"), where("targetEmail", "==", normalized));
-  return onSnapshot(q, async (snap) => {
-    const docSnap = snap.docs.find(d => d.exists());
-    if (!docSnap) return;
-    if (getCurrentProfile()?.coupleId) return;
-    const intent = {
-      fromUid: docSnap.data().fromUid,
-      fromEmail: docSnap.id,
-      targetEmail: docSnap.data().targetEmail
-    };
-    if (!intent.fromUid) return;
-    try {
-      await completeIncomingPairing(myUid, normalized, intent);
-    } catch (e) {
-      onError?.(e);
-    }
-  });
-}
-
-async function completeIncomingPairing(myUid, myEmail, intent) {
-  const intentRef = doc(db, "pairIntents", intent.fromEmail);
-  const myIntentRef = doc(db, "pairIntents", myEmail);
-  await runTransaction(db, async (txn) => {
-    const mySnap = await txn.get(doc(db, "users", myUid));
-    if (mySnap.data()?.coupleId) return;
-
-    const intentSnap = await txn.get(intentRef);
-    if (!intentSnap.exists() || intentSnap.data().targetEmail !== myEmail) return;
-    const partnerUid = intentSnap.data().fromUid;
-    if (!partnerUid) return;
-
-    const coupleId = "CP-" + Math.floor(100000 + Math.random() * 900000);
-    txn.update(doc(db, "users", myUid), { partnerUid, coupleId });
-    txn.update(doc(db, "users", partnerUid), { partnerUid: myUid, coupleId });
-    txn.set(doc(db, "couples", coupleId), {
-      members: [myUid, partnerUid],
-      pairedAt: serverTimestamp(),
-      active: true
-    });
-    txn.delete(intentRef);
-    txn.delete(myIntentRef);
-  });
-}
-
-export async function submitPartnerEmail(myUid, myEmail, partnerEmailRaw) {
-  const myNormalized = myEmail.trim().toLowerCase();
-  const partnerNormalized = partnerEmailRaw.trim().toLowerCase();
-
-  if (!EMAIL_REGEX.test(partnerNormalized)) throw new Error("Enter a valid email address");
-  if (partnerNormalized === myNormalized) throw new Error("You can't pair with yourself");
-
-  const myIntentRef = doc(db, "pairIntents", myNormalized);
-  const reverseIntentRef = doc(db, "pairIntents", partnerNormalized);
-
-  return await runTransaction(db, async (txn) => {
-    const mySnap = await txn.get(doc(db, "users", myUid));
-    if (mySnap.data()?.coupleId) throw new Error("You're already paired");
-
-    const reverseSnap = await txn.get(reverseIntentRef);
-    const reverseTarget = reverseSnap.exists() ? reverseSnap.data().targetEmail : null;
-    const reverseFromUid = reverseSnap.exists() ? reverseSnap.data().fromUid : null;
-
-    if (reverseSnap.exists() && reverseTarget === myNormalized && reverseFromUid) {
-      const coupleId = "CP-" + Math.floor(100000 + Math.random() * 900000);
-      txn.update(doc(db, "users", myUid), { partnerUid: reverseFromUid, coupleId });
-      txn.update(doc(db, "users", reverseFromUid), { partnerUid: myUid, coupleId });
-      txn.set(doc(db, "couples", coupleId), {
-        members: [myUid, reverseFromUid],
-        pairedAt: serverTimestamp(),
-        active: true
-      });
-      txn.delete(reverseIntentRef);
-      txn.delete(myIntentRef);
-      return { type: "paired", coupleId };
-    } else {
-      txn.set(myIntentRef, {
-        fromUid: myUid,
-        fromEmail: myNormalized,
-        targetEmail: partnerNormalized,
-        createdAt: serverTimestamp()
-      });
-      return { type: "waiting" };
-    }
-  });
-}
-
 export async function completeProfile(uid, usernameRaw) {
   const trimmed = usernameRaw.trim();
   if (trimmed.length < 3) throw new Error("Username must be at least 3 characters");
@@ -135,6 +45,103 @@ export async function completeProfile(uid, usernameRaw) {
   await batch.commit();
 }
 
+// ---------------- Username-based pair requests ----------------
+// Mirrors CoupleRepository.kt: `usernames/{username}` maps to a uid,
+// `pairRequests/{toUid}` holds a pending invite (doc id = recipient's uid,
+// so there's at most one pending invite per recipient by construction),
+// and `couples/{coupleId}` holds the paired users once accepted.
+
+/** Sends an invite to `partnerUsernameRaw`. Throws if the username doesn't exist. */
+export async function sendPairRequest(myUid, myUsername, partnerUsernameRaw) {
+  const partnerTrimmed = partnerUsernameRaw.trim();
+  const partnerNormalized = partnerTrimmed.toLowerCase();
+  if (!partnerNormalized) throw new Error("Enter your partner's username");
+
+  const usernameSnap = await getDoc(doc(db, "usernames", partnerNormalized));
+  const targetUid = usernameSnap.exists() ? usernameSnap.data().uid : null;
+  if (!targetUid) throw new Error("No user found with that username");
+  if (targetUid === myUid) throw new Error("You can't pair with yourself");
+
+  try {
+    await setDoc(doc(db, "pairRequests", targetUid), {
+      fromUid: myUid,
+      fromUsername: myUsername,
+      toUid: targetUid,
+      toUsername: partnerTrimmed,
+      createdAt: serverTimestamp()
+    });
+  } catch (e) {
+    if (e.code === "permission-denied") {
+      throw new Error("Couldn't complete that — they may already be paired, or there's already a pending invite");
+    }
+    throw e;
+  }
+
+  return targetUid;
+}
+
+/** Live stream of the request I sent out (at most one at a time). */
+export function watchOutgoingPairRequest(myUid, onChange) {
+  const q = query(collection(db, "pairRequests"), where("fromUid", "==", myUid));
+  return onSnapshot(q, (snap) => {
+    const docSnap = snap.docs.find(d => d.exists());
+    onChange(docSnap ? { toUid: docSnap.id, ...docSnap.data() } : null);
+  });
+}
+
+/** Live stream of a request sent to me — doc id is my own uid, so there's at most one. */
+export function watchIncomingPairRequest(myUid, onChange) {
+  return onSnapshot(doc(db, "pairRequests", myUid), (snap) => {
+    onChange(snap.exists() ? { fromUid: snap.data().fromUid, fromUsername: snap.data().fromUsername } : null);
+  });
+}
+
+/** Cancels a request I sent. No-op if it's already gone or was already accepted. */
+export async function cancelPairRequest(myUid, targetUid) {
+  const ref = doc(db, "pairRequests", targetUid);
+  await runTransaction(db, async (txn) => {
+    const snap = await txn.get(ref);
+    if (snap.exists() && snap.data().fromUid === myUid) {
+      txn.delete(ref);
+    }
+  });
+}
+
+/** Accepts the pending request addressed to me. Returns the new coupleId. */
+export async function acceptPairRequest(myUid) {
+  const myRequestRef = doc(db, "pairRequests", myUid);
+
+  const coupleId = await runTransaction(db, async (txn) => {
+    const requestSnap = await txn.get(myRequestRef);
+    if (!requestSnap.exists()) throw new Error("That invite is no longer available");
+    const fromUid = requestSnap.data().fromUid;
+    if (!fromUid) throw new Error("That invite is no longer available");
+
+    const mySnap = await txn.get(doc(db, "users", myUid));
+    if (mySnap.data()?.coupleId) throw new Error("You're already paired");
+
+    const newCoupleId = "CP-" + Math.floor(100000 + Math.random() * 900000);
+    txn.update(doc(db, "users", myUid), { partnerUid: fromUid, coupleId: newCoupleId });
+    txn.update(doc(db, "users", fromUid), { partnerUid: myUid, coupleId: newCoupleId });
+    txn.set(doc(db, "couples", newCoupleId), {
+      members: [myUid, fromUid],
+      pairedAt: serverTimestamp(),
+      active: true
+    });
+    txn.delete(myRequestRef);
+    return newCoupleId;
+  });
+
+  return coupleId;
+}
+
+/** Rejects (deletes) the pending request addressed to me. */
+export async function rejectPairRequest(myUid) {
+  await deleteDoc(doc(db, "pairRequests", myUid));
+}
+
+// ---------------- Unpair ----------------
+
 export async function unpairPartner(uid) {
   const profileSnap = await getDoc(doc(db, "users", uid));
   const profile = profileSnap.data();
@@ -146,15 +153,4 @@ export async function unpairPartner(uid) {
     if (partnerUid) txn.update(doc(db, "users", partnerUid), { partnerUid: null, coupleId: null });
     if (coupleId) txn.update(doc(db, "couples", coupleId), { active: false });
   });
-
-  try {
-    await deleteDoc(doc(db, "pairIntents", (profile?.email || "").trim().toLowerCase()));
-  } catch {}
-  if (partnerUid) {
-    const partnerSnap = await getDoc(doc(db, "users", partnerUid));
-    const partnerEmail = partnerSnap.data()?.email;
-    if (partnerEmail) {
-      try { await deleteDoc(doc(db, "pairIntents", partnerEmail.trim().toLowerCase())); } catch {}
-    }
-  }
 }

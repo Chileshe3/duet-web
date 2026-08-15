@@ -6,8 +6,9 @@ import {
 import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 import {
-  ensureUserDocument, watchProfile, listenForIncomingPairing,
-  submitPartnerEmail, completeProfile
+  ensureUserDocument, watchProfile, completeProfile,
+  sendPairRequest, watchOutgoingPairRequest, watchIncomingPairRequest,
+  acceptPairRequest, rejectPairRequest, cancelPairRequest
 } from "./pairing.js";
 
 import { setPresence } from "./chat.js";
@@ -19,30 +20,25 @@ const root = document.getElementById("app");
 
 let currentProfile = null;
 let unsubProfile = null;
-let unsubIntent = null;
-let startedIncomingListener = false;
+let unsubIncoming = null;
+let unsubOutgoing = null;
+
+let incomingRequest = null;   // { fromUid, fromUsername } | null
+let outgoingRequest = null;   // { toUid, toUsername, fromUid, ... } | null
+let isResponding = false;     // accepting/declining an incoming invite
 
 let uiStep = "choice";
-let emailInput = "";
-let usernameInput = "";
+let usernameInput = "";        // for choosing my own username
+let partnerUsernameInput = ""; // for inviting a partner
 let submitError = "";
 let isSubmitting = false;
 
-// ---------------- Wiring pairing/profile listeners ----------------
+// ---------------- Wiring profile/pairing listeners ----------------
 
 function watchProfileAndRender(uid) {
   if (unsubProfile) unsubProfile();
   unsubProfile = watchProfile(uid, (profile) => {
     currentProfile = profile;
-    if (currentProfile?.email && !startedIncomingListener) {
-      startedIncomingListener = true;
-      unsubIntent = listenForIncomingPairing(
-        uid,
-        currentProfile.email,
-        () => currentProfile,
-        (e) => console.error("pairing failed", e)
-      );
-    }
     if (currentProfile?.coupleId && currentProfile?.partnerUid) {
       ensureCallController(uid);
     }
@@ -78,17 +74,31 @@ let stopOwnPresence = null;
 onAuthStateChanged(auth, (user) => {
   if (user) {
     uiStep = "choice";
-    ensureUserDocument(user.uid, user.email || "").then(() => watchProfileAndRender(user.uid));
+    ensureUserDocument(user.uid, user.email || "").then(() => {
+      watchProfileAndRender(user.uid);
+
+      unsubIncoming = watchIncomingPairRequest(user.uid, (req) => {
+        incomingRequest = req;
+        render();
+      });
+      unsubOutgoing = watchOutgoingPairRequest(user.uid, (req) => {
+        outgoingRequest = req;
+        if (req) uiStep = "waiting";
+        render();
+      });
+    });
     if (stopOwnPresence) stopOwnPresence();
     stopOwnPresence = startOwnPresenceTracking(user.uid);
   } else {
     if (unsubProfile) unsubProfile();
-    if (unsubIntent) unsubIntent();
+    if (unsubIncoming) unsubIncoming();
+    if (unsubOutgoing) unsubOutgoing();
     teardownChatListeners();
     disposeCallController();
     if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
-    startedIncomingListener = false;
     currentProfile = null;
+    incomingRequest = null;
+    outgoingRequest = null;
     renderAuth();
   }
 });
@@ -163,6 +173,45 @@ function render() {
     return;
   }
 
+  // An incoming invite takes priority over whatever pairing screen is showing —
+  // mirrors GlobalPairingOverlay.kt on the Android side.
+  if (!currentProfile.coupleId && incomingRequest) {
+    root.innerHTML = `
+      <div class="card">
+        <h1>Pairing invite</h1>
+        <p>@${incomingRequest.fromUsername} wants to pair with you on Duet.</p>
+        <p class="error">${submitError}</p>
+        <div class="row">
+          <button id="accept" ${isResponding ? "disabled" : ""}>${isResponding ? "…" : "Accept"}</button>
+          <button id="decline" ${isResponding ? "disabled" : ""}>Decline</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("accept").onclick = async () => {
+      isResponding = true; submitError = "";
+      render();
+      try {
+        await acceptPairRequest(user.uid);
+      } catch (e) {
+        submitError = e.message;
+      }
+      isResponding = false;
+      render();
+    };
+    document.getElementById("decline").onclick = async () => {
+      isResponding = true;
+      render();
+      try {
+        await rejectPairRequest(user.uid);
+      } catch (e) {
+        console.error("reject failed", e);
+      }
+      isResponding = false;
+      render();
+    };
+    return;
+  }
+
   if (currentProfile.coupleId) {
     renderChat(user, currentProfile);
     return;
@@ -171,44 +220,51 @@ function render() {
   teardownChatListeners();
 
   if (uiStep === "waiting") {
+    const partnerName = outgoingRequest?.toUsername || "";
     root.innerHTML = `
       <div class="card">
-        <h1>Waiting for partner…</h1>
+        <h1>Waiting for @${partnerName}…</h1>
         <p>Signed in as ${user.email}</p>
-        <p class="hint">Now enter this account's email (<b>${user.email}</b>) as the partner email on your phone.</p>
+        <p class="hint">You'll be paired automatically once they accept.</p>
         <div class="row">
-          <button id="back">Back</button>
+          <button id="cancel">Cancel invite</button>
           <button id="signout">Sign Out</button>
         </div>
       </div>
     `;
-    document.getElementById("back").onclick = () => { uiStep = "choice"; render(); };
+    document.getElementById("cancel").onclick = async () => {
+      if (outgoingRequest?.toUid) {
+        await cancelPairRequest(user.uid, outgoingRequest.toUid);
+      }
+      uiStep = "choice";
+      render();
+    };
     document.getElementById("signout").onclick = () => signOut(auth);
     return;
   }
 
-  if (uiStep === "enterEmail") {
+  if (uiStep === "enterUsername") {
     root.innerHTML = `
       <div class="card">
-        <h1>Enter partner's email</h1>
+        <h1>Enter your partner's username</h1>
         <p>Signed in as ${user.email}</p>
-        <input id="partnerEmail" type="email" placeholder="Partner's email" value="${emailInput}" />
+        <input id="partnerUsername" type="text" placeholder="Partner's username" value="${partnerUsernameInput}" />
         <p class="error">${submitError}</p>
         <div class="row">
-          <button id="submit" ${isSubmitting ? "disabled" : ""}>${isSubmitting ? "Submitting…" : "Submit"}</button>
+          <button id="submit" ${isSubmitting ? "disabled" : ""}>${isSubmitting ? "Submitting…" : "Send invite"}</button>
           <button id="back">Back</button>
         </div>
       </div>
     `;
     document.getElementById("back").onclick = () => { uiStep = "choice"; submitError = ""; render(); };
     document.getElementById("submit").onclick = async () => {
-      emailInput = document.getElementById("partnerEmail").value;
+      partnerUsernameInput = document.getElementById("partnerUsername").value;
       isSubmitting = true; submitError = "";
       render();
       try {
-        const outcome = await submitPartnerEmail(user.uid, currentProfile.email || user.email, emailInput);
+        await sendPairRequest(user.uid, currentProfile.username, partnerUsernameInput);
         isSubmitting = false;
-        if (outcome.type === "waiting") uiStep = "waiting";
+        uiStep = "waiting";
         render();
       } catch (e) {
         isSubmitting = false;
@@ -232,7 +288,7 @@ function render() {
       </div>
     </div>
   `;
-  document.getElementById("inRelationship").onclick = () => { uiStep = "enterEmail"; render(); };
+  document.getElementById("inRelationship").onclick = () => { uiStep = "enterUsername"; render(); };
   document.getElementById("later").onclick = () => updateDoc(doc(db, "users", user.uid), { pairingSkipped: true });
   document.getElementById("signout").onclick = () => signOut(auth);
 }
