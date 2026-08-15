@@ -12,8 +12,8 @@ import {
 
 import { setPresence } from "./chat.js";
 
-import { renderChat, teardownChatListeners } from "./chat-view.js";
-import { ensureCallController, disposeCallController } from "./call-ui.js";
+import { renderChat, teardownChatListeners } from "./chatview.js";
+import { ensureCallController, disposeCallController } from "./callui.js";
 
 const root = document.getElementById("app");
 
