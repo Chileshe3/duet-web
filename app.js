@@ -1,7 +1,8 @@
 import { auth, db } from "./firebase.js";
 import {
   onAuthStateChanged, signOut,
-  signInWithEmailAndPassword, createUserWithEmailAndPassword
+  signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  GoogleAuthProvider, signInWithPopup
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -115,6 +116,19 @@ async function doAuth(fn) {
   }
 }
 
+async function doGoogleSignIn() {
+  const errEl = document.getElementById("authError");
+  errEl.textContent = "";
+  try {
+    await signInWithPopup(auth, new GoogleAuthProvider());
+  } catch (e) {
+    // Popup closed / blocked shouldn't read as a scary error during testing.
+    if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
+      errEl.textContent = e.message;
+    }
+  }
+}
+
 // ---------------- Rendering (auth/profile/pairing screens) ----------------
 
 function renderAuth() {
@@ -122,6 +136,8 @@ function renderAuth() {
     <div class="card">
       <h1>Duet — Web Test Client</h1>
       <p class="hint">Sign in with a second test account (different email than your phone's account) to test pairing.</p>
+      <button id="googleSignIn" class="google-btn">Continue with Google</button>
+      <div class="divider"><span>or</span></div>
       <input id="email" type="email" placeholder="Email" autocomplete="username" />
       <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
       <div class="row">
@@ -131,6 +147,7 @@ function renderAuth() {
       <p id="authError" class="error"></p>
     </div>
   `;
+  document.getElementById("googleSignIn").onclick = doGoogleSignIn;
   document.getElementById("signin").onclick = () => doAuth(signInWithEmailAndPassword);
   document.getElementById("signup").onclick = () => doAuth(createUserWithEmailAndPassword);
 }
