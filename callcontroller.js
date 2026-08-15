@@ -1,4 +1,4 @@
-import { WebRtcClient } from "./webrtc-client.js";
+import { WebRtcClient } from "./webrtcclient.js";
 import * as CallRepo from "./call.js";
 
 /**
