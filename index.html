@@ -42,7 +42,7 @@
 .bubble.mine { align-self: flex-end; background: #d1477a; color: #fff; border-bottom-right-radius: 4px; }
 .bubble.theirs { align-self: flex-start; background: #f0e6ea; color: #333; border-bottom-left-radius: 4px; }
 .bubble-time { font-size: 10px; opacity: 0.7; margin-top: 2px; text-align: right; }
-.chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #f0e6ea; }
+.chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #f0e6ea; align-items: center; }
 .chat-input-row input { flex: 1; margin: 0; }
 .chat-input-row button { flex: none; width: auto; padding: 10px 16px; }
   .card {
@@ -148,10 +148,127 @@
     background: #eee;
     color: #333;
   }
+
+  /* ---- Voice notes ---- */
+  .mic-btn {
+    width: 36px;
+    background: transparent;
+    color: #333;
+    font-size: 16px;
+    padding: 0;
+    touch-action: none;
+    user-select: none;
+  }
+  .mic-btn:active { color: #d1477a; }
+
+  .recording-row { align-items: center; }
+  .recording-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #333;
+  }
+  .rec-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #e53935;
+    animation: rec-pulse 1s infinite;
+  }
+  @keyframes rec-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  .recording-hint {
+    margin-left: auto;
+    font-size: 12px;
+    color: #888;
+  }
+
+  .voice-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 150px;
+  }
+  .voice-note-toggle {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    color: inherit;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .bubble.theirs .voice-note-toggle { background: rgba(0,0,0,0.08); }
+  .voice-note-body { flex: 1; min-width: 0; }
+  .voice-note-progress {
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.35);
+    overflow: hidden;
+  }
+  .bubble.theirs .voice-note-progress { background: rgba(0,0,0,0.15); }
+  .voice-note-progress-fill {
+    height: 100%;
+    background: currentColor;
+  }
+  .voice-note-time {
+    margin-top: 3px;
+    font-size: 11px;
+    opacity: 0.85;
+  }
+
+  /* ---- Call overlay ---- */
+  #callOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: #1b1024;
+    color: #fff;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    text-align: center;
+    padding: 32px;
+  }
+  .call-avatar {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6a5ae0, #b165e8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+  }
+  .call-name { font-size: 20px; font-weight: 600; }
+  .call-subtitle { font-size: 14px; color: rgba(255,255,255,0.7); }
+  .call-actions { display: flex; gap: 24px; margin-top: 12px; }
+  .call-btn {
+    flex: none;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    font-size: 22px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+  }
+  .call-btn-end { background: #e53935; transform: rotate(135deg); }
+  .call-btn-accept { background: #43a047; }
+  .call-btn-active { background: #fff; color: #000; }
 </style>
 </head>
 <body>
   <div id="app"><div class="card"><p>Loading…</p></div></div>
+  <div id="callOverlay"></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>
