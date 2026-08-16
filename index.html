@@ -285,11 +285,98 @@
   .call-btn-end { background: #e53935; transform: rotate(135deg); }
   .call-btn-accept { background: #43a047; }
   .call-btn-active { background: #fff; color: #000; }
+
+  /* ---- Thinking of You ---- */
+  .nudge-fab {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    font-size: 22px;
+    box-shadow: 0 4px 16px rgba(209,71,122,0.4);
+    z-index: 1500;
+  }
+  .nudge-panel {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 280px;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.15);
+    padding: 14px;
+    z-index: 1500;
+  }
+  .nudge-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    font-size: 14px;
+    color: #d1477a;
+    margin-bottom: 10px;
+  }
+  .nudge-close {
+    flex: none;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    color: #888;
+    font-size: 16px;
+  }
+  .nudge-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 160px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+  }
+  .nudge-preset {
+    background: #fdf2f6;
+    color: #333;
+    text-align: left;
+    font-size: 12px;
+    padding: 8px 10px;
+  }
+  .nudge-recent {
+    border-top: 1px solid #f0e6ea;
+    padding-top: 8px;
+    max-height: 120px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .nudge-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #444;
+  }
+  .nudge-who { color: #999; }
+  .nudge-toast {
+    position: fixed;
+    bottom: 82px;
+    right: 20px;
+    max-width: 240px;
+    background: #333;
+    color: #fff;
+    font-size: 13px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    z-index: 1600;
+  }
 </style>
 </head>
 <body>
   <div id="app"><div class="card"><p>Loading…</p></div></div>
   <div id="callOverlay"></div>
+  <div id="nudgeOverlay"></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

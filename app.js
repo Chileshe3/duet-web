@@ -12,6 +12,8 @@ import {
   acceptPairRequest, rejectPairRequest, cancelPairRequest
 } from "./pairing.js";
 
+import { sendNudge, watchRecentNudges } from "./thinkingofyou.js";
+
 import { setPresence } from "./chat.js";
 
 import { renderChat, teardownChatListeners } from "./chatview.js";
@@ -34,6 +36,116 @@ let partnerUsernameInput = ""; // for inviting a partner
 let submitError = "";
 let isSubmitting = false;
 
+// ---------------- Thinking of You (floating widget, independent of uiStep) ----------------
+
+const presetNudges = [
+  ["💭", "Thinking of you"],
+  ["🥰", "Miss you already"],
+  ["😘", "Sending a kiss your way"],
+  ["☀️", "Hope your day is going well"],
+  ["💪", "You've got this today"],
+  ["😴", "Can't wait to see you"]
+];
+
+let nudgeCoupleId = null;
+let unsubNudges = null;
+let recentNudges = [];
+let nudgeWatermark = Date.now();
+let nudgePanelOpen = false;
+let nudgeToast = null;
+let nudgeToastTimer = null;
+
+const nudgeOverlayEl = document.getElementById("nudgeOverlay");
+
+function watchNudgesFor(coupleId) {
+  if (unsubNudges) unsubNudges();
+  nudgeCoupleId = coupleId;
+  nudgeWatermark = Date.now();
+  unsubNudges = watchRecentNudges(coupleId, (nudges) => {
+    recentNudges = nudges;
+    const uid = auth.currentUser?.uid;
+    const newFromPartner = nudges.filter(n => n.fromUid !== uid && n.timestampMillis > nudgeWatermark);
+    if (newFromPartner.length > 0) {
+      nudgeWatermark = Math.max(...newFromPartner.map(n => n.timestampMillis));
+      const latest = newFromPartner.reduce((a, b) => (a.timestampMillis > b.timestampMillis ? a : b));
+      showNudgeToast(`${latest.emoji} ${latest.message}`);
+    }
+    renderNudgeOverlay();
+  });
+}
+
+function stopWatchingNudges() {
+  if (unsubNudges) { unsubNudges(); unsubNudges = null; }
+  recentNudges = [];
+  nudgeCoupleId = null;
+  nudgePanelOpen = false;
+  renderNudgeOverlay();
+}
+
+function showNudgeToast(text) {
+  nudgeToast = text;
+  renderNudgeOverlay();
+  clearTimeout(nudgeToastTimer);
+  nudgeToastTimer = setTimeout(() => { nudgeToast = null; renderNudgeOverlay(); }, 4000);
+}
+
+function renderNudgeOverlay() {
+  if (!nudgeOverlayEl) return;
+
+  if (!currentProfile?.coupleId || !nudgeCoupleId) {
+    nudgeOverlayEl.innerHTML = "";
+    return;
+  }
+
+  const toastHtml = nudgeToast ? `<div class="nudge-toast">${nudgeToast}</div>` : "";
+
+  if (!nudgePanelOpen) {
+    nudgeOverlayEl.innerHTML = `${toastHtml}<button id="nudgeFab" class="nudge-fab">💭</button>`;
+    document.getElementById("nudgeFab").onclick = () => { nudgePanelOpen = true; renderNudgeOverlay(); };
+    return;
+  }
+
+  const myUid = auth.currentUser?.uid;
+  const presetsHtml = presetNudges
+    .map(([emoji, msg], i) => `<button class="nudge-preset" data-i="${i}">${emoji} ${msg}</button>`)
+    .join("");
+
+  const recentHtml = recentNudges.length
+    ? recentNudges.slice(0, 8).map(n => `
+        <div class="nudge-row">
+          <span>${n.emoji} ${n.message}</span>
+          <span class="nudge-who">${n.fromUid === myUid ? "You" : "Partner"}</span>
+        </div>
+      `).join("")
+    : `<p class="hint">No nudges yet</p>`;
+
+  nudgeOverlayEl.innerHTML = `
+    ${toastHtml}
+    <div class="nudge-panel">
+      <div class="nudge-panel-header">
+        <span>Thinking of You</span>
+        <button id="nudgeClose" class="nudge-close">×</button>
+      </div>
+      <div class="nudge-presets">${presetsHtml}</div>
+      <div class="nudge-recent">${recentHtml}</div>
+    </div>
+  `;
+  document.getElementById("nudgeClose").onclick = () => { nudgePanelOpen = false; renderNudgeOverlay(); };
+  presetNudges.forEach((preset, i) => {
+    const btn = nudgeOverlayEl.querySelector(`.nudge-preset[data-i="${i}"]`);
+    btn.onclick = async () => {
+      if (!myUid || !nudgeCoupleId) return;
+      btn.disabled = true;
+      try {
+        await sendNudge(nudgeCoupleId, myUid, preset[0], preset[1]);
+      } catch (e) {
+        console.error("sendNudge failed", e);
+      }
+      btn.disabled = false;
+    };
+  });
+}
+
 // ---------------- Wiring profile/pairing listeners ----------------
 
 function watchProfileAndRender(uid) {
@@ -42,6 +154,11 @@ function watchProfileAndRender(uid) {
     currentProfile = profile;
     if (currentProfile?.coupleId && currentProfile?.partnerUid) {
       ensureCallController(uid);
+    }
+    if (currentProfile?.coupleId && currentProfile.coupleId !== nudgeCoupleId) {
+      watchNudgesFor(currentProfile.coupleId);
+    } else if (!currentProfile?.coupleId && nudgeCoupleId) {
+      stopWatchingNudges();
     }
     render();
   });
@@ -94,6 +211,7 @@ onAuthStateChanged(auth, (user) => {
     if (unsubProfile) unsubProfile();
     if (unsubIncoming) unsubIncoming();
     if (unsubOutgoing) unsubOutgoing();
+    stopWatchingNudges();
     teardownChatListeners();
     disposeCallController();
     if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
