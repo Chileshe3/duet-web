@@ -1,7 +1,7 @@
 import { db } from "./firebase.js";
 import {
   collection, addDoc, doc, updateDoc,
-  onSnapshot, orderBy, limit, query
+  onSnapshot, orderBy, limit, query, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // Same shape as com.duet.couples.data.thinkingofyou — nudges live under the
@@ -17,6 +17,7 @@ export async function sendNudge(coupleId, fromUid, emoji, message) {
     emoji,
     message,
     timestampMillis: Date.now(),
+    createdAt: serverTimestamp(),
     seen: false
   });
 }
