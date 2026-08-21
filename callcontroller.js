@@ -44,6 +44,13 @@ export class CallController {
         this.isCaller = false;
         this.peerName = (await resolveCallerName(call.callerUid)) || "Partner";
         this._setState({ status: "incoming", peerName: this.peerName });
+      } else if (!call && this.state.status === "incoming") {
+        // The ringing call doc dropped out of this query because its status moved away
+        // from "ringing". If we're still showing "incoming", the caller ended/cancelled
+        // before we answered — not that we accepted (accepting moves state to "connecting"
+        // synchronously before that status change even reaches Firestore, so this branch
+        // can't fire for a call we're actually answering).
+        this._cleanup("Missed call");
       }
     });
   }
