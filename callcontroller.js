@@ -1,6 +1,8 @@
 import { WebRtcClient } from "./webrtcclient.js";
 import * as CallRepo from "./call.js";
 
+const RING_TIMEOUT_MS = 30_000;
+
 /**
  * Usage:
  *   const controller = new CallController({ myUid, onStateChange: renderCallOverlay });
@@ -28,6 +30,7 @@ export class CallController {
     this.unsubCall = null;
     this.unsubCandidates = null;
     this.durationTimer = null;
+    this.ringTimeoutTimer = null;
   }
 
   _setState(patch) {
@@ -71,7 +74,18 @@ export class CallController {
     } catch (e) {
       console.error("Failed to start call", e);
       this._cleanup("Couldn't access microphone");
+      return;
     }
+
+    clearTimeout(this.ringTimeoutTimer);
+    this.ringTimeoutTimer = setTimeout(() => {
+      // Still ringing/negotiating after the timeout, with no answer — end it as unanswered,
+      // same as clicking the end-call button ourselves. _cleanup's reason ("Call ended" on an
+      // outgoing call that never connected) already matches how the caller's own hangup reads.
+      if (this.state.status === "outgoing" || this.state.status === "connecting") {
+        this.endCall();
+      }
+    }, RING_TIMEOUT_MS);
   }
 
   async acceptCall() {
@@ -139,6 +153,8 @@ export class CallController {
   }
 
   _onConnected() {
+    clearTimeout(this.ringTimeoutTimer);
+    this.ringTimeoutTimer = null;
     this._setState({ status: "connected", peerName: this.peerName, durationSeconds: 0, isMuted: false });
     clearInterval(this.durationTimer);
     let seconds = 0;
@@ -153,6 +169,8 @@ export class CallController {
     this.unsubCall = CallRepo.observeCall(this.callId, (call) => {
       if (!call) return;
       if (call.status === CallRepo.CALL_STATUS.ACCEPTED && this.isCaller && call.answerSdp) {
+        clearTimeout(this.ringTimeoutTimer);
+        this.ringTimeoutTimer = null;
         this.rtcClient?.setRemoteDescription({ type: "answer", sdp: call.answerSdp });
         this._setState({ status: "connecting", peerName: this.peerName });
       } else if (call.status === CallRepo.CALL_STATUS.DECLINED) {
@@ -172,6 +190,8 @@ export class CallController {
   }
 
   _cleanup(reason) {
+    clearTimeout(this.ringTimeoutTimer);
+    this.ringTimeoutTimer = null;
     clearInterval(this.durationTimer);
     this.durationTimer = null;
     this.unsubCall?.(); this.unsubCall = null;
@@ -186,3 +206,4 @@ export class CallController {
     }, 1500);
   }
 }
+    
