@@ -18,6 +18,7 @@ import { setPresence } from "./chat.js";
 
 import { renderChat, teardownChatListeners } from "./chatview.js";
 import { ensureCallController, disposeCallController } from "./callui.js";
+import { showGameFab, hideGameFab, teardownGameOverlay } from "./thisorthatview.js";
 
 const root = document.getElementById("app");
 
@@ -155,6 +156,11 @@ function watchProfileAndRender(uid) {
     if (currentProfile?.coupleId && currentProfile?.partnerUid) {
       ensureCallController(uid);
     }
+        if (currentProfile?.coupleId) {
+      showGameFab(currentProfile.coupleId);
+    } else {
+      hideGameFab();
+    }
     if (currentProfile?.coupleId && currentProfile.coupleId !== nudgeCoupleId) {
       watchNudgesFor(currentProfile.coupleId);
     } else if (!currentProfile?.coupleId && nudgeCoupleId) {
@@ -214,6 +220,8 @@ onAuthStateChanged(auth, (user) => {
     stopWatchingNudges();
     teardownChatListeners();
     disposeCallController();
+        hideGameFab();
+    teardownGameOverlay();
     if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
     currentProfile = null;
     incomingRequest = null;

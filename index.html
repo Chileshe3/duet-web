@@ -371,12 +371,73 @@
     box-shadow: 0 4px 16px rgba(0,0,0,0.25);
     z-index: 1600;
   }
+
+  /* ---- Games (This or That) ---- */
+  .game-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1800;
+    background: rgba(0,0,0,0.45);
+    align-items: center;
+    justify-content: center;
+  }
+  .game-card {
+    background: #fff;
+    border-radius: 16px;
+    width: 320px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+  }
+  .game-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid #f0e6ea;
+    font-weight: 600;
+    color: #d1477a;
+  }
+  .game-body {
+    padding: 20px;
+    text-align: center;
+  }
+  .game-body h2 { font-size: 17px; margin: 0 0 8px; color: #333; }
+  .game-round-label { font-size: 12px; color: #888; margin-bottom: 14px; }
+  .game-option {
+    width: 100%;
+    padding: 16px;
+    margin: 6px 0;
+    border-radius: 12px;
+    background: #fdf2f6;
+    color: #333;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .game-option.selected { background: #d1477a; color: #fff; }
+  .game-or { font-size: 12px; color: #999; margin: 4px 0; }
+  .game-reveal { margin-top: 16px; min-height: 20px; }
+  .game-result { font-size: 14px; font-weight: 500; margin-bottom: 10px; }
+  .game-fab {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    font-size: 22px;
+    box-shadow: 0 4px 16px rgba(209,71,122,0.4);
+    z-index: 1500;
+  }
 </style>
 </head>
 <body>
   <div id="app"><div class="card"><p>Loading…</p></div></div>
   <div id="callOverlay"></div>
   <div id="nudgeOverlay"></div>
+  <div id="gameFabContainer"></div>
+  <div id="gameOverlay" class="game-overlay"></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>
