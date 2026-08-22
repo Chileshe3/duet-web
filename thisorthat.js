@@ -4,6 +4,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const ROUNDS_PER_SESSION = 8;
+const GUESS_ROUNDS_PER_SESSION = 2;
 
 export const THIS_OR_THAT_PAIRS = [
   { id: "beach_mountains", optionA: "Beach vacation", optionB: "Mountain cabin" },
@@ -40,8 +41,6 @@ function sessionRef(coupleId, sessionId) {
   return doc(db, "couples", coupleId, "thisOrThatSessions", sessionId);
 }
 
-// Which session is "live" is a pointer field on the couple doc itself, so either
-// partner opening the overlay joins the same session with no separate invite step.
 export function watchActiveSessionId(coupleId, callback) {
   return onSnapshot(coupleRef(coupleId), (snap) => {
     callback(snap.data()?.activeThisOrThatSessionId || null);
@@ -50,9 +49,16 @@ export function watchActiveSessionId(coupleId, callback) {
 
 export async function startSession(coupleId) {
   const roundIds = shuffle(THIS_OR_THAT_PAIRS.map((p) => p.id)).slice(0, ROUNDS_PER_SESSION);
+  // First two rounds are always plain picks; a couple of the rest become
+  // "guess what they'll choose" rounds.
+  const guessableIndices = shuffle(roundIds.map((_, i) => i).filter((i) => i >= 2));
+  const guessIndexSet = new Set(guessableIndices.slice(0, GUESS_ROUNDS_PER_SESSION));
+  const roundTypes = roundIds.map((_, i) => (guessIndexSet.has(i) ? "guess" : "match"));
+
   const ref = doc(collection(db, "couples", coupleId, "thisOrThatSessions"));
   await setDoc(ref, {
     roundIds,
+    roundTypes,
     currentRoundIndex: 0,
     createdAtMillis: Date.now()
   });
@@ -70,12 +76,15 @@ export function watchSession(coupleId, sessionId, callback) {
   });
 }
 
-// Dotted-path update on rounds.<index>.answers.<uid> — same convention as
-// DailyAnswerRepository, so this can never clobber a partner's answer already
-// written for this round.
 export async function submitChoice(coupleId, sessionId, roundIndex, uid, choice) {
   await updateDoc(sessionRef(coupleId, sessionId), {
     [`rounds.${roundIndex}.answers.${uid}`]: { choice, timestampMillis: Date.now() }
+  });
+}
+
+export async function submitPrediction(coupleId, sessionId, roundIndex, uid, predictedChoice) {
+  await updateDoc(sessionRef(coupleId, sessionId), {
+    [`rounds.${roundIndex}.predictions.${uid}`]: { predictedChoice, timestampMillis: Date.now() }
   });
 }
 

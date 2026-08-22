@@ -1,7 +1,7 @@
 import { auth } from "./firebase.js";
 import {
   THIS_OR_THAT_PAIRS, watchActiveSessionId, startSession,
-  watchSession, submitChoice, advanceRound, endSession
+  watchSession, submitChoice, submitPrediction, advanceRound, endSession
 } from "./thisorthat.js";
 
 const overlayEl = document.getElementById("gameOverlay");
@@ -68,12 +68,42 @@ function pairFor(pairId) {
   return THIS_OR_THAT_PAIRS.find((p) => p.id === pairId);
 }
 
-function countMatches(session) {
+function roundTypeAt(session, index) {
+  return (session.roundTypes && session.roundTypes[index]) || "match";
+}
+
+function optionText(pair, choice) {
+  return choice === "A" ? pair.optionA : pair.optionB;
+}
+
+function computeMatchStats(session) {
   const rounds = session.rounds || {};
-  return Object.values(rounds).filter((r) => {
-    const choices = Object.values(r.answers || {}).map((a) => a.choice);
+  const matchIndices = session.roundIds.map((_, i) => i).filter((i) => roundTypeAt(session, i) === "match");
+  const agreed = matchIndices.filter((i) => {
+    const choices = Object.values((rounds[String(i)] || {}).answers || {}).map((a) => a.choice);
     return choices.length === 2 && choices[0] === choices[1];
   }).length;
+  return { total: matchIndices.length, agreed };
+}
+
+function computeGuessStats(session) {
+  const rounds = session.rounds || {};
+  const guessIndices = session.roundIds.map((_, i) => i).filter((i) => roundTypeAt(session, i) === "guess");
+  let total = 0;
+  let correct = 0;
+  guessIndices.forEach((i) => {
+    const round = rounds[String(i)] || {};
+    const answers = round.answers || {};
+    const predictions = round.predictions || {};
+    if (Object.keys(answers).length === 2 && Object.keys(predictions).length === 2) {
+      total += 2;
+      Object.entries(predictions).forEach(([predictorUid, prediction]) => {
+        const theirEntry = Object.entries(answers).find(([uid]) => uid !== predictorUid);
+        if (theirEntry && theirEntry[1].choice === prediction.predictedChoice) correct += 1;
+      });
+    }
+  });
+  return { total, correct };
 }
 
 function computeState() {
@@ -82,25 +112,51 @@ function computeState() {
 
   const idx = currentSession.currentRoundIndex;
   if (idx >= currentSession.roundIds.length) {
-    return { stage: "complete", matchCount: countMatches(currentSession), total: currentSession.roundIds.length };
+    const matchStats = computeMatchStats(currentSession);
+    const guessStats = computeGuessStats(currentSession);
+    const percent = matchStats.total === 0 ? 0 : Math.round((matchStats.agreed / matchStats.total) * 100);
+    return { stage: "complete", percent, guessStats };
   }
 
+  const roundType = roundTypeAt(currentSession, idx);
   const round = (currentSession.rounds || {})[String(idx)] || {};
   const answers = round.answers || {};
+  const predictions = round.predictions || {};
+  const pair = pairFor(currentSession.roundIds[idx]);
+
   const myChoice = answers[uid]?.choice || null;
-  const partnerEntry = Object.entries(answers).find(([k]) => k !== uid);
-  // Same convention as Daily Question: partner's pick only reveals once you've locked yours in.
-  const partnerChoice = myChoice ? (partnerEntry?.[1]?.choice || null) : null;
+  const partnerAnswerEntry = Object.entries(answers).find(([k]) => k !== uid);
+  const partnerChoice = myChoice ? (partnerAnswerEntry?.[1]?.choice || null) : null;
+
+  if (roundType === "guess") {
+    const myPrediction = predictions[uid]?.predictedChoice || null;
+    const partnerPredictionEntry = Object.entries(predictions).find(([k]) => k !== uid);
+    const partnerPrediction = myChoice ? (partnerPredictionEntry?.[1]?.predictedChoice || null) : null;
+    const bothAnswered = myChoice != null && partnerChoice != null;
+
+    let guessStage;
+    if (myPrediction == null) guessStage = "predicting";
+    else if (myChoice == null) guessStage = "choosing";
+    else if (!bothAnswered) guessStage = "waiting";
+    else guessStage = "revealed";
+
+    return {
+      stage: "guess_round",
+      roundNumber: idx + 1,
+      total: currentSession.roundIds.length,
+      pair, myChoice, partnerChoice, myPrediction, partnerPrediction, bothAnswered, guessStage
+    };
+  }
 
   return {
     stage: "round",
-    pair: pairFor(currentSession.roundIds[idx]),
     roundNumber: idx + 1,
     total: currentSession.roundIds.length,
+    pair,
     myChoice,
     partnerChoice,
     bothAnswered: myChoice != null && partnerChoice != null,
-    matchCount: countMatches(currentSession)
+    matchCount: computeMatchStats(currentSession).agreed
   };
 }
 
@@ -109,6 +165,19 @@ function lockChoice(choice) {
   if (!uid || !currentCoupleId || !currentSessionId || !currentSession) return;
   submitChoice(currentCoupleId, currentSessionId, currentSession.currentRoundIndex, uid, choice)
     .catch((e) => console.error("submitChoice failed", e));
+}
+
+function lockPrediction(choice) {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !currentCoupleId || !currentSessionId || !currentSession) return;
+  submitPrediction(currentCoupleId, currentSessionId, currentSession.currentRoundIndex, uid, choice)
+    .catch((e) => console.error("submitPrediction failed", e));
+}
+
+function connectionTagline(percent) {
+  if (percent >= 85) return "Two peas in a pod 💕";
+  if (percent >= 50) return "Well matched 🙂";
+  return "Opposites attract 😅";
 }
 
 function renderOverlay() {
@@ -122,7 +191,7 @@ function renderOverlay() {
   if (state.stage === "start") {
     bodyHtml = `
       <h2>Ready for a round?</h2>
-      <p>Eight quick picks. Lock in your answer before your partner does — see how many match.</p>
+      <p>Eight rounds — most are quick picks, a couple are "guess what they'll choose." Lock in first, see who knows who best.</p>
       <button id="gameStart">Start</button>
     `;
   } else if (state.stage === "round") {
@@ -140,9 +209,43 @@ function renderOverlay() {
         }
       </div>
     `;
+  } else if (state.stage === "guess_round") {
+    const { pair, roundNumber, total, myChoice, partnerChoice, myPrediction, guessStage } = state;
+    bodyHtml = `<p class="game-round-label">Round ${roundNumber} of ${total} · 🔮 Guess round</p>`;
+
+    if (guessStage === "predicting") {
+      bodyHtml += `
+        <p class="game-prompt">What will your partner choose?</p>
+        <button class="game-option" id="predA">${pair.optionA}</button>
+        <p class="game-or">or</p>
+        <button class="game-option" id="predB">${pair.optionB}</button>
+      `;
+    } else if (guessStage === "choosing") {
+      bodyHtml += `
+        <p class="game-note">Your guess: ${optionText(pair, myPrediction)}</p>
+        <p class="game-prompt">Now, what do YOU choose?</p>
+        <button class="game-option" id="optA">${pair.optionA}</button>
+        <p class="game-or">or</p>
+        <button class="game-option" id="optB">${pair.optionB}</button>
+      `;
+    } else if (guessStage === "waiting") {
+      bodyHtml += `<p class="hint">Waiting for your partner…</p>`;
+    } else {
+      const called = myPrediction === partnerChoice;
+      const bothMatched = myChoice === partnerChoice;
+      bodyHtml += `
+        <p class="game-result">${called ? "❤️ You called it!" : "😭 Not this time"}</p>
+        <p class="game-note">You guessed ${optionText(pair, myPrediction)} — they picked ${optionText(pair, partnerChoice)}</p>
+        ${bothMatched ? `<p class="game-note">✨ Bonus — you both picked the same thing!</p>` : ""}
+        <button id="gameNext">Next</button>
+      `;
+    }
   } else if (state.stage === "complete") {
+    const { percent, guessStats } = state;
     bodyHtml = `
-      <h2>🏆 ${state.matchCount} / ${state.total} matched</h2>
+      <h2>💕 ${percent}% connected</h2>
+      <p class="game-note">${connectionTagline(percent)}</p>
+      ${guessStats.total > 0 ? `<p class="game-note">🔮 Mind Reader: ${guessStats.correct}/${guessStats.total} correct guesses</p>` : ""}
       <div class="row">
         <button id="gamePlayAgain">Play again</button>
         <button id="gameDone">Done</button>
@@ -175,6 +278,19 @@ function renderOverlay() {
       document.getElementById("optB").onclick = () => lockChoice("B");
     }
     if (state.bothAnswered) {
+      document.getElementById("gameNext").onclick = () => {
+        advanceRound(currentCoupleId, currentSessionId, currentSession.currentRoundIndex + 1)
+          .catch((e) => console.error("advanceRound failed", e));
+      };
+    }
+  } else if (state.stage === "guess_round") {
+    if (state.guessStage === "predicting") {
+      document.getElementById("predA").onclick = () => lockPrediction("A");
+      document.getElementById("predB").onclick = () => lockPrediction("B");
+    } else if (state.guessStage === "choosing") {
+      document.getElementById("optA").onclick = () => lockChoice("A");
+      document.getElementById("optB").onclick = () => lockChoice("B");
+    } else if (state.guessStage === "revealed") {
       document.getElementById("gameNext").onclick = () => {
         advanceRound(currentCoupleId, currentSessionId, currentSession.currentRoundIndex + 1)
           .catch((e) => console.error("advanceRound failed", e));
