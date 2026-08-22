@@ -28,6 +28,11 @@ import {
   hideGameFab as hideTruthOrDareFab,
   teardownGameOverlay as teardownTruthOrDareOverlay
 } from "./truthordareview.js";
+import {
+  showGameFab as showWouldYouRatherFab,
+  hideGameFab as hideWouldYouRatherFab,
+  teardownGameOverlay as teardownWouldYouRatherOverlay
+} from "./wouldyouratherview.js";
 
 const root = document.getElementById("app");
 
@@ -168,9 +173,11 @@ function watchProfileAndRender(uid) {
     if (currentProfile?.coupleId) {
       showThisOrThatFab(currentProfile.coupleId);
       showTruthOrDareFab(currentProfile.coupleId);
+      showWouldYouRatherFab(currentProfile.coupleId);
     } else {
       hideThisOrThatFab();
       hideTruthOrDareFab();
+      hideWouldYouRatherFab();
     }
     if (currentProfile?.coupleId && currentProfile.coupleId !== nudgeCoupleId) {
       watchNudgesFor(currentProfile.coupleId);
@@ -233,8 +240,10 @@ onAuthStateChanged(auth, (user) => {
     disposeCallController();
     hideThisOrThatFab();
     hideTruthOrDareFab();
+    hideWouldYouRatherFab();
     teardownThisOrThatOverlay();
     teardownTruthOrDareOverlay();
+    teardownWouldYouRatherOverlay();
     if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
     currentProfile = null;
     incomingRequest = null;
