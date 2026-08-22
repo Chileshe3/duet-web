@@ -18,7 +18,16 @@ import { setPresence } from "./chat.js";
 
 import { renderChat, teardownChatListeners } from "./chatview.js";
 import { ensureCallController, disposeCallController } from "./callui.js";
-import { showGameFab, hideGameFab, teardownGameOverlay } from "./thisorthatview.js";
+import {
+  showGameFab as showThisOrThatFab,
+  hideGameFab as hideThisOrThatFab,
+  teardownGameOverlay as teardownThisOrThatOverlay
+} from "./thisorthatview.js";
+import {
+  showGameFab as showTruthOrDareFab,
+  hideGameFab as hideTruthOrDareFab,
+  teardownGameOverlay as teardownTruthOrDareOverlay
+} from "./truthordareview.js";
 
 const root = document.getElementById("app");
 
@@ -156,10 +165,12 @@ function watchProfileAndRender(uid) {
     if (currentProfile?.coupleId && currentProfile?.partnerUid) {
       ensureCallController(uid);
     }
-        if (currentProfile?.coupleId) {
-      showGameFab(currentProfile.coupleId);
+    if (currentProfile?.coupleId) {
+      showThisOrThatFab(currentProfile.coupleId);
+      showTruthOrDareFab(currentProfile.coupleId);
     } else {
-      hideGameFab();
+      hideThisOrThatFab();
+      hideTruthOrDareFab();
     }
     if (currentProfile?.coupleId && currentProfile.coupleId !== nudgeCoupleId) {
       watchNudgesFor(currentProfile.coupleId);
@@ -220,8 +231,10 @@ onAuthStateChanged(auth, (user) => {
     stopWatchingNudges();
     teardownChatListeners();
     disposeCallController();
-        hideGameFab();
-    teardownGameOverlay();
+    hideThisOrThatFab();
+    hideTruthOrDareFab();
+    teardownThisOrThatOverlay();
+    teardownTruthOrDareOverlay();
     if (stopOwnPresence) { stopOwnPresence(); stopOwnPresence = null; }
     currentProfile = null;
     incomingRequest = null;
